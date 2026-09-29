@@ -153,6 +153,7 @@
     <h1>チンチロリン</h1>
     <div class="opt"><span>人数</span><div class="seg" id="seg-count" role="group" aria-label="人数"></div></div>
     <div class="opt"><span>サイコロの数</span><div class="seg" id="seg-dice" role="group" aria-label="サイコロの数"></div></div>
+    <div class="opt"><span>サイコロの面</span><div class="seg" id="seg-sides" role="group" aria-label="サイコロの面"></div></div>
     <div class="opt"><span>サイコロの種類</span><div class="seg" id="seg-mat" role="group" aria-label="サイコロの種類"></div></div>
     <div class="opt"><span>1ターンで振れる回数</span><div class="seg" id="seg-rolls" role="group" aria-label="1ターンで振れる回数"></div></div>
     <button class="primary" id="btn-start" type="button">スタート</button>
@@ -303,17 +304,24 @@
     },
     // 音階（ペンタトニック）から選ぶので、重なってもにごらない
     note(set) { return set[Math.floor(Math.random() * set.length)]; },
-    // 木：乾いた「コトッ」— 沈む短いサイン波と、帯域を絞った一瞬のノイズ
-    knock(v, f, t, dur) {
+    // 詰まった木のかたまり：bright（0〜1）が大きいほど硬い当たりが強い
+    block(v, t, bright) {
       const c = this.ctx;
+      // 当たった瞬間の硬い「カッ」
+      const n1 = c.createBufferSource(); n1.buffer = this.noise;
+      const hp = c.createBiquadFilter(); hp.type = 'bandpass'; hp.frequency.value = 2300 + bright * 1500 + Math.random() * 500; hp.Q.value = 1.2;
+      const g1 = c.createGain(); this.env(g1, t, v * (0.45 + bright * 0.5), 0.016);
+      n1.connect(hp); hp.connect(g1); g1.connect(this.out); n1.start(t, Math.random() * 0.2); n1.stop(t + 0.025);
+      // 木の身が鳴る、こもった短いかたまり
+      const n2 = c.createBufferSource(); n2.buffer = this.noise;
+      const lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 1000 + bright * 500; lp.Q.value = 0.9;
+      const g2 = c.createGain(); this.env(g2, t, v * 0.7, 0.035);
+      n2.connect(lp); lp.connect(g2); g2.connect(this.out); n2.start(t, Math.random() * 0.2); n2.stop(t + 0.05);
+      // 重さ：低く、すぐ止まる「ゴッ」
       const o = c.createOscillator(); o.type = 'sine';
-      o.frequency.setValueAtTime(f, t); o.frequency.exponentialRampToValueAtTime(f * 0.72, t + dur);
-      const g = c.createGain(); this.env(g, t, v * 0.7, dur);
-      o.connect(g); g.connect(this.out); if (this.rev) g.connect(this.rev); o.start(t); o.stop(t + dur + 0.02);
-      const n = c.createBufferSource(); n.buffer = this.noise;
-      const bp = c.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = f * 2.4; bp.Q.value = 3;
-      const ng = c.createGain(); this.env(ng, t, v * 0.55, 0.035);
-      n.connect(bp); bp.connect(ng); ng.connect(this.out); n.start(t, Math.random() * 0.2); n.stop(t + 0.04);
+      o.frequency.setValueAtTime(270 + Math.random() * 50, t); o.frequency.exponentialRampToValueAtTime(150, t + 0.04);
+      const g3 = c.createGain(); this.env(g3, t, v * 0.4, 0.045);
+      o.connect(g3); g3.connect(this.out); o.start(t); o.stop(t + 0.07);
     },
     // ガラス：澄んだ「チン」— 倍音が少なく、高く短めに響く
     glass(v, base, dur, t) {
@@ -333,9 +341,10 @@
       if (!this.ok(type, type === 'floor' ? 0.06 : type === 'wall' ? 0.14 : 0.12)) return;
       const t = this.ctx.currentTime + 0.005;
       if (this.mat === 'wood') {
-        if (type === 'floor') this.knock(v * 0.6, 330 + Math.random() * 110, t, 0.05);
-        else if (type === 'wall') { this.knock(v * 0.75, 480 + Math.random() * 140, t, 0.07); this.tick(v * 0.35, t, 2600); this.ring(v * 0.2, 700 + Math.random() * 200, 0.18, t); }
-        else { this.tick(v * 0.7, t, 1800 + Math.random() * 900); this.knock(v * 0.55, 620 + Math.random() * 240, t, 0.04); }
+        // 積み木のように中身の詰まった木：短く硬い「カッ」と、低く詰まった「ゴッ」。響きは残さない
+        if (type === 'floor') this.block(v * 0.8, t, 0.35);
+        else if (type === 'wall') { this.block(v * 0.95, t, 0.8); this.ring(v * 0.12, 700 + Math.random() * 200, 0.12, t); }
+        else this.block(v * 0.85, t, 1);
         return;
       }
       if (this.mat === 'glass') {
@@ -409,6 +418,81 @@
     o.top = top; o.east = east; o.south = rest[Math.floor(Math.random() * 2)];
   }
   // ax 方向（sg は ±1）へ90°倒れたあとの向き
+  // ===== 10面サイコロ（五角ねじれ両錐）の立体モデル =====
+  // 座標は X＝画面の右、Y＝画面の上（北）、Z＝真上
+  const V = {
+    dot: (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2],
+    cross: (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]],
+    add: (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]],
+    sub: (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]],
+    scale: (a, k) => [a[0] * k, a[1] * k, a[2] * k],
+    norm: (a) => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; },
+  };
+  const rvec = (mag) => V.scale(V.norm([rnd(-1, 1), rnd(-1, 1), rnd(-1, 1)]), mag);
+  // 3×3 回転行列（行優先）。R はモデル座標 → ワールド座標
+  const M3 = {
+    axis(ax, ang) {
+      const [x, y, z] = V.norm(ax), c = Math.cos(ang), s = Math.sin(ang), t = 1 - c;
+      return [t * x * x + c, t * x * y - s * z, t * x * z + s * y,
+              t * x * y + s * z, t * y * y + c, t * y * z - s * x,
+              t * x * z - s * y, t * y * z + s * x, t * z * z + c];
+    },
+    mul(A, B) {
+      const R = new Array(9);
+      for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) R[i * 3 + j] = A[i * 3] * B[j] + A[i * 3 + 1] * B[3 + j] + A[i * 3 + 2] * B[6 + j];
+      return R;
+    },
+    apply(R, v) { return [R[0] * v[0] + R[1] * v[1] + R[2] * v[2], R[3] * v[0] + R[4] * v[1] + R[5] * v[2], R[6] * v[0] + R[7] * v[1] + R[8] * v[2]]; },
+    // 誤差でゆがまないよう正規直交に戻す
+    ortho(R) {
+      const r0 = V.norm([R[0], R[1], R[2]]);
+      const r1raw = [R[3], R[4], R[5]];
+      const r1 = V.norm(V.sub(r1raw, V.scale(r0, V.dot(r0, r1raw))));
+      const r2 = V.cross(r0, r1);
+      return [...r0, ...r1, ...r2];
+    },
+  };
+  const D10 = (() => {
+    const s72 = Math.sin(2 * Math.PI / 5), c72 = Math.cos(2 * Math.PI / 5), s36 = Math.sin(Math.PI / 5), c36 = Math.cos(Math.PI / 5);
+    // 凧形の4点が同じ平面に乗る、上下の輪の高さ（頂点の高さを1としたとき）
+    const K = -s72 * c36 + (c72 - 1) * s36;
+    const h = (K + s72) / (K - s72);
+    const verts = [[0, 0, 1], [0, 0, -1]];
+    for (let k = 0; k < 5; k++) verts.push([Math.cos(k * 2 * Math.PI / 5), Math.sin(k * 2 * Math.PI / 5), h]);
+    for (let k = 0; k < 5; k++) verts.push([Math.cos(k * 2 * Math.PI / 5 + Math.PI / 5), Math.sin(k * 2 * Math.PI / 5 + Math.PI / 5), -h]);
+    const U = (k) => 2 + (k % 5), L = (k) => 7 + (k % 5);
+    const faces = [];
+    for (let k = 0; k < 5; k++) faces.push({ idx: [0, U(k), L(k), U(k + 1)], pole: 0 });
+    for (let k = 0; k < 5; k++) faces.push({ idx: [1, L(k), U(k + 1), L(k + 1)], pole: 1 });
+    for (const f of faces) {
+      const q = f.idx.map((i) => verts[i]);
+      const c = V.scale(q.reduce((a, b) => V.add(a, b), [0, 0, 0]), 1 / 4);
+      let n = V.norm(V.cross(V.sub(q[1], q[0]), V.sub(q[3], q[0])));
+      if (V.dot(n, c) < 0) n = V.scale(n, -1);
+      f.n = n; f.c = c; f.u = V.norm(V.sub(verts[f.pole], c));
+    }
+    // 数字：上側に奇数、その向かい側（平行な面）に 11 − その数
+    [1, 3, 5, 7, 9].forEach((lab, k) => {
+      faces[k].label = lab;
+      const opp = faces.slice(5).reduce((best, f) => (V.dot(f.n, faces[k].n) < V.dot(best.n, faces[k].n) ? f : best));
+      opp.label = 11 - lab;
+    });
+    return { verts, faces };
+  })();
+  function convexHull(pts) {
+    const q = pts.map((a) => [a[0], a[1]]).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    const cr = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+    const lo = [], up = [];
+    for (const a of q) { while (lo.length >= 2 && cr(lo[lo.length - 2], lo[lo.length - 1], a) <= 0) lo.pop(); lo.push(a); }
+    for (let i = q.length - 1; i >= 0; i--) { const a = q[i]; while (up.length >= 2 && cr(up[up.length - 2], up[up.length - 1], a) <= 0) up.pop(); up.push(a); }
+    lo.pop(); up.pop();
+    return lo.concat(up);
+  }
+  const mixHex = (a, b, t) => {
+    const pa = [1, 3, 5].map((i) => parseInt(a.slice(i, i + 2), 16)), pb = [1, 3, 5].map((i) => parseInt(b.slice(i, i + 2), 16));
+    return `rgb(${pa.map((v, i) => Math.round(v + (pb[i] - v) * t)).join(',')})`;
+  };
+
   function turned(o, ax, sg) {
     const { top, east, south } = o;
     if (ax === 'x') return sg > 0 ? { top: 7 - east, east: top, south } : { top: east, east: 7 - top, south };
@@ -424,6 +508,7 @@
       this.brushPat = this.ctx.createPattern(TEX.brushed, 'repeat');
       this.woodPat = this.ctx.createPattern(TEX.woodgrain, 'repeat');
       this.mat = 'metal';
+      this.sides = 6;
     }
     get animating() { return this.holding || !!this.pending; }
     get g() {
@@ -600,7 +685,8 @@
     }
     newDie(x, y, top) {
       const o = { x, y, z: 0, vx: 0, vy: 0, vz: 0, a: rnd(-0.6, 0.6), va: 0, gone: false, out: false, travel: 0, tip: null, air: 7 };
-      setOrient(o, top || ri(6));
+      if (this.sides === 10) this.orient10(o, top);
+      else setOrient(o, top || ri(6));
       return o;
     }
     roundRect(x, y, w, h, rad) {
@@ -631,6 +717,15 @@
       for (const o of this.dice) {
         if (o.gone) continue;
         const len = d * 0.62 + o.z * 1.5;
+        if (this.sides === 10) {
+          const rho = d * 0.55;
+          const hull = convexHull(D10.verts.map((v) => { const w = M3.apply(o.R, v); return [o.x + w[0] * rho, o.y - w[1] * rho]; }));
+          for (let t = 0; t <= 1.001; t += 0.2) {
+            hull.forEach(([x, y], j) => (j ? ctx.lineTo(x - LIGHT.x * len * t, y - LIGHT.y * len * t) : ctx.moveTo(x - LIGHT.x * len * t, y - LIGHT.y * len * t)));
+            ctx.closePath();
+          }
+          continue;
+        }
         for (let t = 0; t <= 1.001; t += 0.2) {
           ctx.save();
           ctx.translate(o.x - LIGHT.x * len * t, o.y - LIGHT.y * len * t);
@@ -661,6 +756,7 @@
     }
     drawDie(o) {
       if (o.gone) return;
+      if (this.sides === 10) return this.drawPoly10(o);
       const ctx = this.ctx, { d } = this.g;
       const k = 1 + o.z / (this.S * 0.45);
       const s = d * k, h = s / 2, rad = s * 0.24;
@@ -676,14 +772,14 @@
       ctx.save();
       ctx.translate(o.x, y + s * 0.11); ctx.rotate(o.a + rot);
       ctx.beginPath(); this.roundRect(-fw / 2, -h, fw, s, rad);
-      ctx.fillStyle = this.mat === 'glass' ? 'rgba(90,150,165,0.14)' : this.mat === 'wood' ? '#8a6238' : '#23272b'; ctx.fill();
+      ctx.fillStyle = this.mat === 'glass' ? 'rgba(150,185,210,0.14)' : this.mat === 'wood' ? '#8a6238' : '#23272b'; ctx.fill();
       ctx.restore();
       if (this.mat === 'glass' && !o.out) {
         ctx.save();
         ctx.translate(o.x, y); ctx.rotate(o.a + rot);
         ctx.beginPath(); this.roundRect(-fw / 2, -h, fw, s, rad); ctx.clip();
         ctx.rotate(-(o.a + rot));
-        const mag = 1.2;
+        const mag = 1.3;
         ctx.scale(mag, mag);
         ctx.globalAlpha = 1;
         ctx.drawImage(this.bg, -o.x + LIGHT.x * s * 0.1, -y + LIGHT.y * s * 0.1, this.S, this.S);
@@ -701,6 +797,122 @@
       ctx.restore();
     }
     // 1つの面（中心 cx、倒れる方向に kx 倍に縮めて描く）
+    // ===== 10面：立体として回転・描画する =====
+    orient10(o, top) {
+      const f = D10.faces.find((F) => F.label === top) || D10.faces[Math.floor(Math.random() * 10)];
+      const ax = V.cross(f.n, [0, 0, 1]);
+      let R = M3.axis(ax, Math.acos(Math.max(-1, Math.min(1, f.n[2]))));
+      R = M3.mul(M3.axis([0, 0, 1], rnd(0, Math.PI * 2)), R);
+      o.R = M3.ortho(R); o.top = f.label; o.w = [0, 0, 0]; o.rest = true;
+    }
+    rotate10(o, w, dt) {
+      const a = Math.hypot(w[0], w[1], w[2]) * dt;
+      if (a > 1e-7) o.R = M3.ortho(M3.mul(M3.axis(w, a), o.R));
+    }
+    upFace10(o) {
+      let best = null, bn = null;
+      for (const F of D10.faces) { const n = M3.apply(o.R, F.n); if (!bn || n[2] > bn[2]) { best = F; bn = n; } }
+      return { F: best, n: bn };
+    }
+    // 床の上：進む向きに転がり、勢いがなくなったら一番上を向いた面を上にして倒れて止まる
+    roll10(o, dt, sp) {
+      const S = this.S, r = this.g.d * 0.5;
+      if (sp > 0.3 * S) {
+        const k = Math.min(1, dt * 10);
+        let wx = o.w[0] + (o.vy / r - o.w[0]) * k, wy = o.w[1] + (o.vx / r - o.w[1]) * k;
+        const m = Math.hypot(wx, wy);
+        if (m > 30) { wx *= 30 / m; wy *= 30 / m; }
+        o.w = [wx, wy, -o.va];
+        this.rotate10(o, o.w, dt); o.rest = false;
+        o.travel += sp * dt;
+        if (o.travel > this.g.d * 0.6) { o.travel = 0; Sound.impact('floor', Math.min(0.4, sp / S * 0.25)); }
+      } else {
+        o.w = [0, 0, 0];
+        this.rotate10(o, [0, 0, -o.va], dt);
+        const { F, n } = this.upFace10(o);
+        const ang = Math.acos(Math.max(-1, Math.min(1, n[2])));
+        if (ang < 0.004) { o.rest = true; o.top = F.label; }
+        else { o.rest = false; o.R = M3.ortho(M3.mul(M3.axis(V.cross(n, [0, 0, 1]), Math.min(ang, 7 * dt)), o.R)); }
+      }
+    }
+    snap10(o) {
+      const { F, n } = this.upFace10(o);
+      const ang = Math.acos(Math.max(-1, Math.min(1, n[2])));
+      if (ang > 1e-6) o.R = M3.ortho(M3.mul(M3.axis(V.cross(n, [0, 0, 1]), ang), o.R));
+      o.top = F.label; o.rest = true;
+    }
+    drawPoly10(o) {
+      const ctx = this.ctx, m = this.mat, { d } = this.g;
+      const k = 1 + o.z / (this.S * 0.45), rho = d * 0.55 * k, tilt = 0.35;
+      const cx = o.x, cy = o.y - o.z * 0.5;
+      const P = D10.verts.map((v) => { const w = M3.apply(o.R, v); return [cx + w[0] * rho, cy - w[1] * rho - w[2] * rho * tilt]; });
+      const view = V.norm([0, -tilt, 1]);
+      const Lw = V.norm([-0.55, 0.52, 0.72]);
+      const faces = D10.faces.map((f) => { const n = M3.apply(o.R, f.n); return { f, n, vis: V.dot(n, view) }; });
+      const path = (idx) => { ctx.beginPath(); idx.forEach((i, j) => (j ? ctx.lineTo(P[i][0], P[i][1]) : ctx.moveTo(P[i][0], P[i][1]))); ctx.closePath(); };
+      const hull = convexHull(P);
+      const hullPath = () => { ctx.beginPath(); hull.forEach(([x, y], j) => (j ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.closePath(); };
+      if (m === 'glass') {
+        if (!o.out) {
+          ctx.save(); hullPath(); ctx.clip();
+          ctx.translate(cx, cy); ctx.scale(1.3, 1.3);
+          ctx.drawImage(this.bg, -cx + LIGHT.x * rho * 0.2, -cy + LIGHT.y * rho * 0.2, this.S, this.S);
+          ctx.restore();
+        }
+        // 裏側の面の稜線がうっすら透けて見える
+        for (const F of faces) if (F.vis <= 0) {
+          path(F.f.idx); ctx.fillStyle = 'rgba(40,80,110,0.07)'; ctx.fill();
+          ctx.strokeStyle = 'rgba(255,255,255,0.22)'; ctx.lineWidth = 0.8; ctx.stroke();
+        }
+      } else {
+        hullPath(); ctx.fillStyle = m === 'wood' ? '#6e4a28' : '#2a2e33'; ctx.fill();
+      }
+      const front = faces.filter((F) => F.vis > 0).sort((a, b) => a.vis - b.vis);
+      for (const F of front) {
+        const n = F.n;
+        const diff = Math.max(0, V.dot(n, Lw));
+        const refl = V.sub(V.scale(n, 2 * V.dot(n, Lw)), Lw);
+        const spec = Math.pow(Math.max(0, V.dot(refl, view)), 18);
+        const b = 0.25 + 0.75 * diff;
+        path(F.f.idx);
+        if (m === 'glass') {
+          ctx.fillStyle = `rgba(228,242,252,${0.04 + b * 0.16})`; ctx.fill();
+          const hsh = (F.f.label * 0.618034) % 1;
+          if (hsh > 0.55) { ctx.fillStyle = `hsla(${Math.floor(hsh * 997) % 360},90%,68%,0.14)`; ctx.fill(); }
+        } else {
+          ctx.fillStyle = m === 'wood' ? mixHex('#7a5230', '#f7e6c6', b) : mixHex('#454b52', '#f2f4f6', b); ctx.fill();
+          ctx.save(); ctx.clip();
+          ctx.globalAlpha = m === 'wood' ? 0.45 : 0.5; ctx.fillStyle = m === 'wood' ? this.woodPat : this.brushPat;
+          ctx.fillRect(cx - rho * 1.6, cy - rho * 1.6, rho * 3.2, rho * 3.2);
+          ctx.restore();
+        }
+        if (spec > 0.01) { path(F.f.idx); ctx.fillStyle = `rgba(255,255,255,${Math.min(0.85, spec * (m === 'wood' ? 0.35 : 0.9))})`; ctx.fill(); }
+        path(F.f.idx);
+        ctx.strokeStyle = m === 'glass' ? 'rgba(255,255,255,0.8)' : m === 'wood' ? 'rgba(70,38,12,0.5)' : 'rgba(255,255,255,0.35)';
+        ctx.lineWidth = Math.max(0.6, rho * 0.03); ctx.lineJoin = 'round'; ctx.stroke();
+        if (F.vis > 0.2) this.label10(o, F.f, rho, tilt, cx, cy, m, Math.min(1, (F.vis - 0.2) / 0.3));
+      }
+      hullPath(); ctx.strokeStyle = m === 'glass' ? 'rgba(20,50,70,0.5)' : 'rgba(10,12,14,0.55)'; ctx.lineWidth = 1; ctx.stroke();
+    }
+    // 面に沿って数字を書く（面の傾きに合わせて変形する）
+    label10(o, f, rho, tilt, cx, cy, m, alpha) {
+      const ctx = this.ctx;
+      const Lp = (v) => [v[0] * rho, -v[1] * rho - v[2] * rho * tilt];
+      const pos = M3.apply(o.R, V.add(f.c, V.scale(f.u, 0.1)));
+      const u = M3.apply(o.R, f.u), w = M3.apply(o.R, V.cross(f.u, f.n));
+      const ax = Lp(w), ay = Lp(V.scale(u, -1));
+      ctx.save();
+      ctx.transform(ax[0] / 100, ax[1] / 100, ay[0] / 100, ay[1] / 100, cx + pos[0] * rho, cy - pos[1] * rho - pos[2] * rho * tilt);
+      ctx.globalAlpha = alpha;
+      const lab = String(f.label), fs = lab.length > 1 ? 36 : 44;
+      ctx.font = `900 ${fs}px "Zen Kaku Gothic New", "Hiragino Sans", sans-serif`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      if (m === 'glass') { ctx.lineWidth = 7; ctx.strokeStyle = 'rgba(15,35,55,0.85)'; ctx.strokeText(lab, 0, 0); ctx.fillStyle = '#ffffff'; }
+      else ctx.fillStyle = m === 'wood' ? '#3a2112' : '#15181c';
+      ctx.fillText(lab, 0, 0);
+      if (f.label === 6 || f.label === 9) ctx.fillRect(-fs * 0.24, fs * 0.46, fs * 0.48, fs * 0.09);
+      ctx.restore();
+    }
     drawFace(face, s, cx, kx, rot, lx, ly, dark) {
       const ctx = this.ctx, h = s / 2, rad = s * 0.24, m = this.mat;
       const la = Math.atan2(ly, lx);
@@ -717,48 +929,87 @@
       };
 
       if (m === 'glass') {
-        // 透明なガラス：中心はほぼ無色、厚みのある縁ほど青緑に色づく
-        ctx.fillStyle = lin([[0, 'rgba(255,255,255,0.12)'], [0.4, 'rgba(235,248,252,0.02)'], [1, 'rgba(120,170,185,0.06)']]);
-        ctx.fill();
+        // ダイヤ：面をカット面（三角）に分け、光の向きで白く光る面と暗い面を作る
+        const hash = (n) => { const x = Math.sin(n * 12.9898 + face * 78.233) * 43758.5453; return x - Math.floor(x); };
+        // 外周（角と辺の中点）と、内側のテーブル面の頂点
+        const ring = (k) => [[-k, -k], [0, -k], [k, -k], [k, 0], [k, k], [0, k], [-k, k], [-k, 0]];
+        const O = ring(h * 0.98), I = ring(h * 0.46);
         ctx.save(); ctx.clip();
-        // 縁の色づきはごく細く（厚いガラスの端だけがわずかに青緑に見える）
-        ctx.strokeStyle = 'rgba(90,160,175,0.16)'; ctx.lineWidth = s * 0.09; ctx.stroke();
-        ctx.strokeStyle = 'rgba(40,110,125,0.32)'; ctx.lineWidth = s * 0.025; ctx.stroke();
-        // 内側に映り込む辺：面の内側にもう一つ細い輪郭が見える
-        ctx.beginPath(); this.roundRect(-h * 0.84, -h * 0.84, s * 0.84, s * 0.84, rad * 0.75);
-        ctx.strokeStyle = lin([[0, 'rgba(255,255,255,0.55)'], [0.5, 'rgba(255,255,255,0.08)'], [1, 'rgba(30,80,95,0.3)']]);
-        ctx.lineWidth = Math.max(0.6, s * 0.012); ctx.stroke();
-        ctx.beginPath(); this.roundRect(-h, -h, s, s, rad);
-        // 反対側（底）の面の目が、屈折してうっすら見える
-        const back = 7 - face;
-        for (const [px, py] of PIPS[back]) {
-          const pr = (back === 1 ? 0.165 : 0.092) * s;
-          ctx.fillStyle = back === 1 ? 'rgba(216,69,58,0.28)' : 'rgba(246,249,251,0.26)';
-          ctx.beginPath(); ctx.arc((0.5 - px) * s * 0.9 - lx * s * 0.07, (py - 0.5) * s * 0.9 - ly * s * 0.07, pr * 0.8, 0, Math.PI * 2); ctx.fill();
+        // 奥の床がカットで少しだけ透ける
+        ctx.fillStyle = 'rgba(230,242,252,0.05)'; ctx.fillRect(-h, -h, s, s);
+        const tri = (pts, col) => {
+          ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]); ctx.lineTo(pts[1][0], pts[1][1]); ctx.lineTo(pts[2][0], pts[2][1]); ctx.closePath();
+          ctx.fillStyle = col; ctx.fill();
+        };
+        const shade = (cx2, cy2, n) => {
+          const l = Math.hypot(cx2, cy2) || 1;
+          const facing = (cx2 / l) * lx + (cy2 / l) * ly;       // 光の方を向いている面ほど明るい
+          const b = Math.max(0, Math.min(1, 0.5 + facing * 0.4 + (hash(n) - 0.5) * 0.9));
+          // ダイヤは明暗の差が大きい：白く光る面・澄んだ面・黒く沈む面
+          // ほとんどの面は透き通り、光を捉えた一部の面だけが白く光る
+          if (b > 0.82) return `rgba(255,255,255,${0.55 + (b - 0.82) * 2})`;
+          if (b > 0.4) return `rgba(235,245,255,${0.04 + (b - 0.4) * 0.15})`;
+          return `rgba(40,75,110,${0.1 + (0.4 - b) * 0.35})`;
+        };
+        let n = 0;
+        for (let i = 0; i < 8; i++) {
+          const j = (i + 1) % 8;
+          const A = [O[i], O[j], I[j]], B = [O[i], I[j], I[i]];
+          for (const t3 of [A, B]) {
+            const cx2 = (t3[0][0] + t3[1][0] + t3[2][0]) / 3, cy2 = (t3[0][1] + t3[1][1] + t3[2][1]) / 3;
+            tri(t3, shade(cx2, cy2, n));
+            // ファイア：ところどころに虹色の分散光
+            if (hash(n + 40) > 0.8) tri(t3, `hsla(${Math.floor(hash(n + 80) * 360)},90%,68%,0.22)`);
+            n++;
+          }
         }
-        // 表面のつや：光の側に細い映り込みの筋
-        ctx.fillStyle = lin([[0, 'rgba(255,255,255,0.5)'], [0.12, 'rgba(255,255,255,0.08)'], [0.2, 'rgba(255,255,255,0)'],
-          [0.3, 'rgba(255,255,255,0)'], [0.36, 'rgba(255,255,255,0.4)'], [0.42, 'rgba(255,255,255,0)'], [1, 'rgba(255,255,255,0)']]);
-        ctx.fillRect(-h, -h, s, s);
-        // 光を受けた角の強いきらめき
-        const gx = lx * h * 0.62, gy = ly * h * 0.62, gs = s * 0.2;
-        const glint = ctx.createRadialGradient(gx, gy, 0, gx, gy, gs);
-        glint.addColorStop(0, 'rgba(255,255,255,1)'); glint.addColorStop(0.25, 'rgba(255,255,255,0.55)'); glint.addColorStop(1, 'rgba(255,255,255,0)');
-        ctx.fillStyle = glint; ctx.fillRect(gx - gs, gy - gs, gs * 2, gs * 2);
+        // テーブル面（中央の平らな面）は4つの三角で、明暗を斜めに分ける
+        for (let i = 0; i < 8; i += 2) {
+          const t3 = [[0, 0], I[i], I[(i + 2) % 8]];
+          const cx2 = (I[i][0] + I[(i + 2) % 8][0]) / 3, cy2 = (I[i][1] + I[(i + 2) % 8][1]) / 3;
+          tri(t3, shade(cx2 * 0.6, cy2 * 0.6, 100 + i));
+        }
+        // カットの稜線
+        ctx.strokeStyle = 'rgba(255,255,255,0.75)'; ctx.lineWidth = Math.max(0.5, s * 0.007);
+        ctx.beginPath();
+        for (let i = 0; i < 8; i++) {
+          ctx.moveTo(O[i][0], O[i][1]); ctx.lineTo(I[i][0], I[i][1]);
+          ctx.moveTo(O[i][0], O[i][1]); ctx.lineTo(I[(i + 1) % 8][0], I[(i + 1) % 8][1]);
+        }
+        I.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.closePath();
+        ctx.stroke();
         ctx.restore();
-        // 縁：光の側は鋭く白く、反対側は暗く締まる
-        ctx.strokeStyle = lin([[0, 'rgba(255,255,255,1)'], [0.3, 'rgba(255,255,255,0.4)'], [0.6, 'rgba(160,200,210,0.2)'], [1, 'rgba(20,50,60,0.6)']]);
-        ctx.lineWidth = s * 0.028; ctx.stroke();
-        ctx.strokeStyle = 'rgba(20,45,55,0.4)'; ctx.lineWidth = 0.8; ctx.stroke();
+        ctx.beginPath(); this.roundRect(-h, -h, s, s, rad);
+        ctx.strokeStyle = lin([[0, 'rgba(255,255,255,1)'], [0.5, 'rgba(210,225,235,0.5)'], [1, 'rgba(40,60,80,0.7)']]);
+        ctx.lineWidth = s * 0.03; ctx.stroke();
         pips((x, y, pr) => {
-          const pg = ctx.createRadialGradient(x - lx * pr * 0.3, y - ly * pr * 0.3, pr * 0.1, x, y, pr);
-          if (face === 1) { pg.addColorStop(0, '#ff6a5a'); pg.addColorStop(1, '#b8322a'); }
-          else { pg.addColorStop(0, '#ffffff'); pg.addColorStop(1, '#d9e2e7'); }
-          ctx.fillStyle = pg; ctx.beginPath(); ctx.arc(x, y, pr * 0.9, 0, Math.PI * 2); ctx.fill();
-          ctx.strokeStyle = 'rgba(0,30,40,0.3)'; ctx.lineWidth = Math.max(0.6, pr * 0.14);
-          ctx.beginPath(); ctx.arc(x, y, pr * 0.9, la - 1.1, la + 1.1); ctx.stroke();
+          ctx.fillStyle = face === 1 ? '#c42d24' : '#16202c';
+          ctx.beginPath(); ctx.arc(x, y, pr * 0.88, 0, Math.PI * 2); ctx.fill();
+          ctx.strokeStyle = 'rgba(255,255,255,0.95)'; ctx.lineWidth = Math.max(0.8, pr * 0.2);
+          ctx.stroke();
         });
-        dark *= 0.45;
+        // 光の側の角に十字のきらめき
+        if (kx > 0.6) {
+          const sx = lx * h * 0.86, sy = ly * h * 0.86;
+          const L = s * (0.2 + hash(202) * 0.1);
+          ctx.save();
+          ctx.translate(sx, sy); ctx.rotate(Math.PI / 8);
+          for (const [w, len] of [[s * 0.03, L], [s * 0.022, L * 0.6]]) {
+            for (const ang of [0, Math.PI / 2]) {
+              ctx.save(); ctx.rotate(ang);
+              const g = ctx.createLinearGradient(-len, 0, len, 0);
+              g.addColorStop(0, 'rgba(255,255,255,0)'); g.addColorStop(0.5, 'rgba(255,255,255,0.95)'); g.addColorStop(1, 'rgba(255,255,255,0)');
+              ctx.fillStyle = g; ctx.fillRect(-len, -w / 2, len * 2, w);
+              ctx.restore();
+            }
+            ctx.rotate(Math.PI / 4);
+          }
+          const core = ctx.createRadialGradient(0, 0, 0, 0, 0, s * 0.07);
+          core.addColorStop(0, 'rgba(255,255,255,1)'); core.addColorStop(1, 'rgba(255,255,255,0)');
+          ctx.fillStyle = core; ctx.fillRect(-s * 0.07, -s * 0.07, s * 0.14, s * 0.14);
+          ctx.restore();
+        }
+        dark *= 0.5;
       } else if (m === 'wood') {
         // 木：明るい木地に木目、目は焼き入れたような焦げ茶
         ctx.fillStyle = lin([[0, '#f7e6c6'], [0.45, '#e3c392'], [1, '#b48755']]);
@@ -861,6 +1112,7 @@
         o.vx = vx; o.vy = vy;
         const f = Math.min(1, Math.hypot(vx, vy) / (2 * S));   // 0：そっと落とす〜1：強く投げる
         o.vz = S * 0.35 * f * rnd(0.6, 1);
+        o.w = rvec(4 + f * 16);
         // そっと落としても空中で転がるので、持っていたときとは目が変わる
         o.air = f < 0.2 ? rnd(4, 7) : 3 + f * 6;
         o.flips = 0;
@@ -903,7 +1155,7 @@
         Object.assign(o, {
           vx: -ox * speed + px * rnd(-0.4, 0.4) * this.S, vy: -oy * speed + py * rnd(-0.4, 0.4) * this.S,
           z: this.S * rnd(0.08, 0.14), vz: this.S * rnd(0.3, 0.55), a: rnd(0, Math.PI), va: rnd(-16, 16),
-          air: rnd(5, 9), out: i === shonben,
+          air: rnd(5, 9), out: i === shonben, w: rvec(rnd(8, 16)),
         });
         if (o.out) {
           const ang = angle + Math.PI + rnd(-0.8, 0.8);
@@ -931,9 +1183,9 @@
         while (acc >= step) { this.physics(step); acc -= step; }
         if (this.pending && !this.holding) {
           const S = this.S;
-          const done = this.dice.every(o => o.gone || (!o.tip && o.z === 0 && Math.hypot(o.vx, o.vy) < 0.01 * S));
+          const done = this.dice.every(o => o.gone || (!o.tip && o.z === 0 && Math.hypot(o.vx, o.vy) < 0.01 * S && (this.sides !== 10 || o.rest)));
           if (done || now - this.pending.t0 > 6000) {
-            this.dice.forEach(o => { this.finishTip(o); o.vx = o.vy = o.va = 0; o.z = o.vz = 0; });
+            this.dice.forEach(o => { this.finishTip(o); if (this.sides === 10 && !o.gone) this.snap10(o); o.vx = o.vy = o.va = 0; o.z = o.vz = 0; });
             const p = this.pending; this.pending = null;
             this.draw(); this.running = false;
             p.resolve(this.dice.map(o => o.top));
@@ -965,7 +1217,11 @@
           o.va += rnd(-60, 60) * dt; o.va *= 0.985; o.a += o.va * dt;
           o.z += (S * HAND_Z - o.z) * Math.min(1, dt * 10); o.vz = 0;
           // 手の中でもたまに転がる（揺らすほど多く）
-          if (o.tip) this.advanceTip(o, dt);
+          if (this.sides === 10) {
+            o.w = V.add(V.scale(o.w, 0.99), rvec(40 * dt));
+            if (Math.hypot(...o.w) > 12) o.w = V.scale(V.norm(o.w), 12);
+            this.rotate10(o, o.w, dt); o.rest = false;
+          } else if (o.tip) this.advanceTip(o, dt);
           else if (Math.random() < dt * (1.5 + Math.hypot(o.vx, o.vy) / S * 3)) this.randomTip(o, 9);
         });
       } else {
@@ -985,7 +1241,8 @@
                 if (!o.out && hit > 0.3 * S) {
                   const ka = rnd(0, Math.PI * 2), kick = hit * rnd(0.08, 0.22);
                   o.vx += Math.cos(ka) * kick; o.vy += Math.sin(ka) * kick;
-                  if (!o.tip && (!o.flips || Math.random() < 0.6)) this.randomTip(o, rnd(5, 8));
+                  if (this.sides === 10) o.w = V.add(o.w, rvec(rnd(4, 9)));
+                  else if (!o.tip && (!o.flips || Math.random() < 0.6)) this.randomTip(o, rnd(5, 8));
                 }
               } else o.vz = 0;
             }
@@ -993,8 +1250,11 @@
           const sp = Math.hypot(o.vx, o.vy);
           if (o.z > 0) {
             // 空中では回転し続ける
-            if (!o.tip && o.air > 0) this.randomTip(o, o.air);
-            if (o.tip) this.advanceTip(o, dt);
+            if (this.sides === 10) { this.rotate10(o, o.w, dt); o.rest = false; }
+            else {
+              if (!o.tip && o.air > 0) this.randomTip(o, o.air);
+              if (o.tip) this.advanceTip(o, dt);
+            }
           }
           if (o.out) {
             // 台の上に落ちたらすぐ止まる。画面の外には出さない
@@ -1004,7 +1264,8 @@
             if (o.z === 0) {
               const f = Math.max(0, 1 - 12 * dt);
               o.vx *= f; o.vy *= f; o.va *= f;
-              if (o.tip) this.advanceTip(o, dt);
+              if (this.sides === 10) this.roll10(o, dt, Math.hypot(o.vx, o.vy));
+              else if (o.tip) this.advanceTip(o, dt);
               if (Math.hypot(o.vx, o.vy) < 0.02 * S) o.vx = o.vy = 0;
             }
             continue;
@@ -1016,7 +1277,8 @@
             const decel = (o.tip || sp > 0.38 * S ? 0.16 : 2.2) * S * dt;
             const sp2 = Math.hypot(o.vx, o.vy);
             if (sp2 > 0) { const kk = Math.max(0, sp2 - decel) / sp2; o.vx *= kk; o.vy *= kk; }
-            if (o.tip) {
+            if (this.sides === 10) this.roll10(o, dt, sp);
+            else if (o.tip) {
               if (this.advanceTip(o, dt)) {
                 o.vx *= 0.965; o.vy *= 0.965;
                 Sound.impact('floor', Math.min(0.45, sp / S * 0.3));
@@ -1102,11 +1364,11 @@
   // =====================================================================
   // 設定
   // =====================================================================
-  const MATS = [['metal', '金属'], ['glass', 'ガラス'], ['wood', '木']];
-  let setup = { count: 3, dice: 3, rolls: 1, mat: 'metal' };
+  const MATS = [['metal', '金属'], ['glass', 'ダイヤ'], ['wood', '木']];
+  let setup = { count: 3, dice: 3, rolls: 1, mat: 'metal', sides: 6 };
   try {
     const saved = JSON.parse(localStorage.getItem('chinchiro.setup.v4') || 'null');
-    if (saved && saved.count && saved.dice) setup = { count: saved.count, dice: saved.dice, rolls: saved.rolls || 1, mat: MATS.some(([k]) => k === saved.mat) ? saved.mat : 'metal' };
+    if (saved && saved.count && saved.dice) setup = { count: saved.count, dice: saved.dice, rolls: saved.rolls || 1, mat: MATS.some(([k]) => k === saved.mat) ? saved.mat : 'metal', sides: saved.sides === 10 ? 10 : 6 };
   } catch (e) {}
   const saveSetup = () => { try { localStorage.setItem('chinchiro.setup.v4', JSON.stringify(setup)); } catch (e) {} };
 
@@ -1117,6 +1379,7 @@
   function renderSetup() {
     seg($('seg-count'), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], setup.count, (v) => { setup.count = v; saveSetup(); renderSetup(); }, v => v + '人');
     seg($('seg-dice'), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], setup.dice, (v) => { setup.dice = v; saveSetup(); renderSetup(); }, v => v + '個');
+    seg($('seg-sides'), [6, 10], setup.sides, (v) => { setup.sides = v; saveSetup(); renderSetup(); }, v => v + '面');
     const segMat = $('seg-mat');
     segMat.innerHTML = MATS.map(([k, label]) => `<button type="button" data-v="${k}" aria-pressed="${k === setup.mat}">${label}</button>`).join('');
     segMat.onclick = (e) => { const b = e.target.closest('button'); if (b) { setup.mat = b.dataset.v; saveSetup(); renderSetup(); } };
@@ -1139,10 +1402,10 @@
     Sound.init();
     game.turn = 0; game.used = 0; game.busy = false;
     tray.n = setup.dice;
-    tray.mat = setup.mat; Sound.mat = setup.mat;
+    tray.mat = setup.mat; Sound.mat = setup.mat; tray.sides = setup.sides;
     hideCallout();
     show('game');
-    requestAnimationFrame(() => { tray.resize(); tray.place(SAMPLE.slice(0, setup.dice)); render(); });
+    requestAnimationFrame(() => { tray.resize(); tray.place(Array.from({ length: setup.dice }, (_, i) => SAMPLE[i % SAMPLE.length])); render(); });
   }
 
   const playerName = (i) => `P${i + 1}`;
@@ -1178,7 +1441,7 @@
     const total = values.reduce((a, b) => a + b, 0);
     let h;
     if (sh >= 0) h = { name: 'ションベン', tier: 'bad', sub: '' };
-    else if (n === 3) { const y = evaluate(values, sh); h = { name: y.name, tier: y.tier, sub: `合計 ${total}` }; }
+    else if (n === 3 && setup.sides === 6) { const y = evaluate(values, sh); h = { name: y.name, tier: y.tier, sub: `合計 ${total}` }; }
     else h = { name: `合計 ${total}`, tier: 'mid', sub: '' };
     showCallout(setup.count > 1 ? playerName(who) : '', h);
     game.used++;
